@@ -1,38 +1,76 @@
-from urls import *
 from .models import User,Employee,Department
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.permissions import IsAuthenticated  
-from .serializers import LoginSerializer
-from rest_framework.response import response
+from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
+from django.core.mail import send_mail
+from django.conf import settings
+from .serializers import UserLoginSerializer, UserRegistrationSerializer
+from rest_framework.response import Response
 from django.contrib.auth import authenticate
+from rest_framework import status
 class LoginAPI(APIView):
-    def post(self, request):
+    def post(self, request): #hit the post request
         try:
-            data = request.data 
-            serializer = LoginSerializer(data = data)
-            if serializer.is_valid():
-                email = serializer.data['email']
-                password = serializer.data['password']
-                user = authenticate(email = email, password = password)
-                if user is None:
-                    return response({
+            serializer = UserLoginSerializer(data = request.data)
+            if not serializer.is_valid():
+                return Response({
                     'status': 400,
-                    'message': 'wrong credentials',
-                    'data': {}
-                })
+                    'message':'invalid data sent',
+                    'errors': serializer.errors
 
-            refresh = RefreshToken.for_user(user)
-            return {
-                'refresh' : str(refresh),
+                },status = status.HTTP_400_BAD_REQUEST)
+            email = serializer.validated_data['email']
+            password = serializer.validated_data['password']
+            user = authenticate(email = email, password = password)
+            if user is None:
+                return Response({
+                    'status':400,
+                    'message' : 'wrong credentials',
+                    'data':{}
+                }, status = status.HTTP_400_BAD_REQUEST)
+            #now the access token for the employee works here
+            refresh=RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
                 'access': str(refresh.access_token)
-            }
 
-#sending the wrong credentials message
-            return response({
-                'status': 400,
-                'message': 'wrong credentials',
-                'data': serializer.errors
-            })
+            }, status = status.HTTP_200_OK)
         except Exception as e:
-            print(e)
+            return Response({
+                'status':500,
+                'message':'internal server error',
+                'error':str(e)
+            }, status= status.HTTP_500_INTERNAL_SERVER_ERROR)
+class UserRegistrationView(APIView):
+    def post(self, request):
+        serializer = UserRegistrationSerializer(data = request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            user.is_verified = False
+            signer = TimestampSigner()
+            token = signer.sign(user.pk)
+            verification_url = f"http://127.0.0.1:8000/attendance/verify/{token}/"
+
+            send_mail(
+                subject = 'verify your account',
+                message = f"Click here to verify your account: {verification_url}",
+                from_email=settings.EMAIL_HOST_USER,
+                recipient_list=[user.email],
+                fail_silently=False
+            )
+            return Response({"Message":"User registered. Check your email to verify"}, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+class VerifyEmail(APIView):
+    def get(self,request, token):
+        signer = TimestampSigner()
+        try:
+            user_id = signer.unsign(token, max_age=86400)
+        except SignatureExpired:
+            return Response({"Message":"Verification link expired"}, status= 400)
+        except BadSignature:
+            return Response({"Message": "Invalid verification link"}, status = 400)
+        user = User.objects.get(pk=user_id)
+        user.is_active = True
+        user.save()
+        return Response({"Message": "Email verified successfully. You can now login"})
