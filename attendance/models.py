@@ -28,6 +28,9 @@ class User(AbstractUser):
         ('HR', 'HR'),
         ('MANAGER', 'Manager'),
         ("EMPLOYEE", 'Employee')]
+    email = models.EmailField(unique=True)
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ['username']
     
     role = models.CharField(max_length=20, choices = ROLE_CHOICES, default='EMPLOYEE', db_index=True)
     is_verified = models.BooleanField(default=False)
