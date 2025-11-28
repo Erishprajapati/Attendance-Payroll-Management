@@ -1,6 +1,6 @@
 from .models import User,Employee,Department
 from drf_yasg.utils import swagger_auto_schema
-from drf_yasg import openapi
+from rest_framework.decorators import action
 from django.db import IntegrityError, transaction
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -11,6 +11,8 @@ from .serializers import *
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
 from rest_framework import status, viewsets
+from rest_framework.viewsets import GenericViewSet
+from django.core.exceptions import ValidationError
 class LoginAPI(APIView):
     @swagger_auto_schema(request_body=UserLoginSerializer,tags=['Authentication'])
     def post(self, request): #hit the post request
@@ -85,7 +87,62 @@ class VerifyEmail(APIView):
         user.is_active = True
         user.save()
         return Response({"Message": "Email verified successfully. You can now login"})
-    
 
-class EmployeeView(viewsets.ModelViewset):
-    serializer = EmployeeSerializer
+class AttendanceViewset(GenericViewSet):
+    serializer_class = CheckInSerializer
+    def get_employee(self):
+        try:
+
+            return self.request.user.Employee_profile
+        except Employee.DoesNotExist:
+            raise ValidationError("Employee profile doesnot exist for this user")
+    
+    @action(detail = False, methods = ['post'])
+    def check_in(self, request):
+        emp = self.get_employee()
+        today = timezone.now().date()
+
+        with transaction.atomic():
+            record, created = AttendanceRecord.objects.select_for_update().get_or_create(
+                employee = emp,
+                date=today
+            )
+            if record.check_in:
+                return Response({
+                    "error": "Already checked in today"
+                }, status = status.HTTP_400_BAD_REQUEST)
+            record.check_in = timezone.now()
+            record.save()
+        return Response({"Message":"Checked in successfully"}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['post'])
+    def check_out(self, request):
+        emp = self.get_employee()
+        today=timezone.now().date()
+        try:
+            record = AttendanceRecord.objects.get(employee = emp, date=today)
+        except AttendanceRecord.DoesNotExist:
+            return Response({"Error":"No check-in found for today"},status = status.HTTP_400_BAD_REQUEST)
+        if record.check_out:
+            return Response({"Error":"Already checked out today"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        record.check_out = timezone.now()
+        record.save()
+        return Response({"Message":"Checked out successfully"}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods = ['get'])
+    def my_attendance(self, request):
+        """Employee can view their attendance logs for previous 30 days"""
+        emp = self.get_employee()
+        records = AttendanceRecord.objects.filter(
+            employee=emp,
+            date__gte=timezone.now().date() - timezone.timedelta(days=30)
+        ).order_by('-date')
+        summary = {
+            'total_present':records.filter(status='present').count(),
+            'total_half_days':records.filter(status='half_day').count(),
+            'total_absent':records.filter(status='absent').count(),
+            'total_late': records.filter(late_minutes__gt=0).count(),
+        }
+        serializer = AttendanceSummarySerializer(summary)
+        return Response(serializer.data)
