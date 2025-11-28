@@ -91,9 +91,11 @@ class VerifyEmail(APIView):
 class AttendanceViewset(GenericViewSet):
     serializer_class = CheckInSerializer
     def get_employee(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            raise ValidationError("User is not authenticated")
         try:
-
-            return self.request.user.Employee_profile
+            return user.Employee_profile 
         except Employee.DoesNotExist:
             raise ValidationError("Employee profile doesnot exist for this user")
     
