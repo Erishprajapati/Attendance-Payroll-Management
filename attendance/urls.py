@@ -1,13 +1,5 @@
-from .views import LoginAPI, UserRegistrationView, VerifyEmail, AttendanceViewset
-from django.urls import path
-from rest_framework.routers import DefaultRouter
-
-router = DefaultRouter()
-router.register(r'attendance', AttendanceViewset, basename='attendance')
+from django.urls import path, include
+from attendance.api.v1 import *
 urlpatterns = [
-    path('login/', LoginAPI.as_view(), name='login'),
-    path('register/', UserRegistrationView.as_view(), name='signup'),
-    path("verify/<path:token>/",VerifyEmail.as_view())
+    path("api/v1/", include("attendance.api.v1.urls"))
 ]
-
-urlpatterns += router.urls
