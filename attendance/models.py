@@ -28,21 +28,15 @@ class Department(models.Model):
     def __str__(self):
         return self.name
 class User(AbstractUser):
-    ROLE_CHOICES = [
-        ('ADMIN', 'Admin'),
-        ('HR', 'HR'),
-        ('MANAGER', 'Manager'),
-        ("EMPLOYEE", 'Employee')]
     email = models.EmailField(unique=True)
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ['username']
 
     def __str__(self):
         return self.email
-    
-    role = models.CharField(max_length=20, choices = ROLE_CHOICES, default='EMPLOYEE', db_index=True)
     is_verified = models.BooleanField(default=False)
     department = models.ForeignKey(Department, null = True, on_delete=models.SET_NULL)
+
 class Employee(models.Model):
     GENDER_CHOICES = [
         ('M', 'Male'),
@@ -55,7 +49,13 @@ class Employee(models.Model):
         ('CONTRACT', 'Contract'),
         ('INTERN', 'Intern')
     ]
+    ROLE_CHOICES = [
+        ('ADMIN', 'Admin'),
+        ('HR', 'HR'),
+        ('MANAGER', 'Manager'),
+        ("EMPLOYEE", 'Employee')]
     user = models.OneToOneField(User, on_delete=models.CASCADE, db_index=True, related_name='Employee_profile')
+    role = models.CharField(max_length=20, choices = ROLE_CHOICES, default='EMPLOYEE', db_index=True)
     phone = models.CharField(_('Phone'), max_length=10, validators=[nepali_phone_regex], unique=True, db_index=True)
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     date_of_birth = models.DateField(null=False, blank = False)
@@ -73,7 +73,6 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.user.username}"
-    
 class AttendanceRecord(models.Model):
     ATTENDANCE_CHOICES = [
         ('preseent', 'Present'),
