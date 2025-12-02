@@ -16,6 +16,13 @@ nepali_phone_regex = RegexValidator(
     message=_("Kindly enter valid phone numbers")
 )
 
+def make_aware_if_naive(dt):
+    if dt is None:
+        return None
+    if timezone.is_naive(dt):
+        return timezone.make_aware(dt)
+    return dt
+
 class Department(models.Model):
     name = models.CharField(max_length=155, db_index=True, unique=True)
     description = models.TextField()
@@ -101,58 +108,76 @@ class AttendanceRecord(models.Model):
     class Meta:
         unique_together=('employee', 'date') #one employee per day record
 
-    def calculate_status_and_hours(self): #TODO: can be customized through signals
-        """calculate status and hours worked based on checkin and checkout"""
-        if self.status in ['on_leave, unpaid_leave', 'holiday', 'weekend']:
-            self.hours_worked =0.00
+    def calculate_status_and_hours(self):
+    # Fix your broken status list
+        if self.status in ['on_leave', 'unpaid_leave', 'holiday', 'weekend']:
+            self.hours_worked = 0.00
             return
-        
+
+        # Absent if no check-in
         if not self.check_in:
-            self.status='absent'
-            self.hours_worked=0.00
+            self.status = 'absent'
+            self.hours_worked = 0.00
             return
+
         dept = self.employee.department
         if not dept:
             self.status = 'absent'
-            self.hours_worked=0.00
+            self.hours_worked = 0.00
             return
-        
-        if self.check_out:
-            duration=self.check_out - self.check_in
-            total_seconds=duration.total_seconds()
-            self.hours_worked= round(total_seconds/3600,2)
-        else:
-            shift_end = datetime.combine(self.date, dept.end_time)
-            if timezone.now()>shift_end:
-                self.checkout = shift_end
-                self.is_auto_checkout = True
-                duration=shift_end-self.check_in
-                total_seconds = duration.total_seconds()
-                self.hours_worked=round(total_seconds / 3600,2)
-            else:
-                self.hours_worked=0.00
 
-        if self.hours_worked>=8.00:
-            self.status='present'
-        elif self.hours_worked>=4.00:
-            self.status='half_day'
+        # Normalize all datetimes
+        check_in_dt = make_aware_if_naive(self.check_in)
+        check_out_dt = make_aware_if_naive(self.check_out)
+
+        shift_start = make_aware_if_naive(
+            datetime.combine(self.date, dept.work_start_time)
+        )
+        shift_end = make_aware_if_naive(
+            datetime.combine(self.date, dept.work_end_time)
+        )
+
+        now = timezone.now()
+
+        # If checkout exists → normal calculation
+        if check_out_dt:
+            duration = check_out_dt - check_in_dt
+            self.hours_worked = round(duration.total_seconds() / 3600, 2)
+
         else:
-            self.status='absent'
-        #logic to calculate late arrival time
-        shift_start = datetime.combine(self.date, dept.work_start_time)
-        check_in_dt = self.check_in
-        if check_in_dt<shift_start:
-            self.late_minutes = 0 #Not late
+            # Auto-checkout if shift already ended
+            if now > shift_end:
+                self.check_out = shift_end
+                self.is_auto_checkout = True
+
+                duration = shift_end - check_in_dt
+                self.hours_worked = round(duration.total_seconds() / 3600, 2)
+            else:
+                # shift ongoing
+                self.hours_worked = 0.00
+
+        # Status assignment
+        if self.hours_worked >= 8.00:
+            self.status = 'preseent'
+        elif self.hours_worked >= 4.00:
+            self.status = 'half_day'
+        else:
+            self.status = 'absent'
+
+        # Late calculation
+        if check_in_dt <= shift_start:
+            self.late_minutes = 0
         else:
             late_duration = check_in_dt - shift_start
-            self.late_minutes = int(late_duration.total_seconds()//60)
-            #apply grace minutes for 15
-            if self.late_minutes <= dept.grace_minutes:
+            self.late_minutes = int(late_duration.total_seconds() // 60)
+
+            # Apply grace minutes safely
+            if hasattr(dept, "grace_minutes") and self.late_minutes <= dept.grace_minutes:
                 self.late_minutes = 0
 
-            #TODO: calculate overtime Logic here(needs to be written)
-            #for not lets set to 0 unless manually approved later
-            self.overtime_hours =0.00
+        # Overtime (placeholder)
+        self.overtime_hours = 0.00
+
     def save(self, *args, **kwargs):
         self.calculate_status_and_hours()
         super().save(*args, **kwargs)
