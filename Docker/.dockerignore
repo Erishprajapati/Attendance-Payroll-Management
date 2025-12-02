@@ -1,0 +1,33 @@
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+*.env
+
+# Git
+.git/
+.gitignore
+
+# OS/editor junk
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Redis/Celery artifacts
+celerybeat-schedule
+celerybeat.pid
+
+# Docker junk
+Dockerfile*
+docker-compose.yml
