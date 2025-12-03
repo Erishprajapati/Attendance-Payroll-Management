@@ -15,10 +15,18 @@ from rest_framework.viewsets import GenericViewSet
 from django.core.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from ...permissions import *
-from ...utils import has_role
+from django.core.cache import cache
+#redis function 
+def get_or_set_cache(key, func, timeout = 3600):
+    data = cache.get(key)
+    if not data:
+        data = func()
+        cache.set(key, data, timeout)
+    return data
+
 class LoginAPI(APIView):
     @swagger_auto_schema(request_body=UserLoginSerializer,tags=['Authentication'])
-    def post(self, request): #hit the post request
+    def post(self, request):
         try:
             serializer = UserLoginSerializer(data = request.data)
             if not serializer.is_valid():
@@ -135,25 +143,40 @@ class AttendanceViewset(GenericViewSet):
         record.check_out = timezone.now()
         record.save()
         return Response({"Message":"Checked out successfully"}, status=status.HTTP_200_OK)
-    
-    @action(detail=False, methods = ['get'], permission_classes = [IsEmployee, IsHR])
+    @action(detail=False, methods=['get'], permission_classes=[IsEmployee, IsHR])
     def my_attendance(self, request):
         """Employee can view their attendance logs for previous 30 days"""
         emp = self.get_employee()
-        records = AttendanceRecord.objects.filter(
-            employee=emp,
-            date__gte=timezone.now().date() - timezone.timedelta(days=30)
-        ).order_by('-date')
+        cache_key = f"attendance_{emp.id}_30days"
+
+        def fetch_attendance():
+            # only fetch this employee's last 30 days
+            return list(
+                AttendanceRecord.objects.filter(
+                    employee=emp,
+                    date__gte=timezone.now().date() - timezone.timedelta(days=30)
+                ).values(
+                    'id', 'date', 'status', 'late_minutes'
+                )
+            )
+
+        records = get_or_set_cache(cache_key, fetch_attendance, timeout=60*40)  # 40 minutes
+        total_present = sum(1 for r in records if r['status'] == 'present')
+        total_half_days = sum(1 for r in records if r['status'] == 'half_day')
+        total_absent = sum(1 for r in records if r['status'] == 'absent')
+        total_late = sum(1 for r in records if r['late_minutes'] > 0)
+
         summary = {
-            'total_present':records.filter(status='present').count(),
-            'total_half_days':records.filter(status='half_day').count(),
-            'total_absent':records.filter(status='absent').count(),
-            'total_late': records.filter(late_minutes__gt=0).count(),
+            'total_present': total_present,
+            'total_half_days': total_half_days,
+            'total_absent': total_absent,
+            'total_late': total_late,
             'records': records,
         }
+
         serializer = AttendanceSummarySerializer(summary)
         return Response(serializer.data)
-    
+
     @action(detail =False, methods=['get'], permission_classes = [IsHR])
     def overall_attendance(self,request):
         records = AttendanceRecord.objects.filter(
@@ -170,17 +193,41 @@ class EmployeeProfileViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-
-        # If user is anonymous, return nothing
         if not user or user.is_anonymous:
             return Employee.objects.none()
-
-        # Check roles
         role = user.Employee_profile.role
 
-        # HR / Admin / Manager → can view all employees
         if role in ['HR', 'ADMIN', 'MANAGER']:
-            return Employee.objects.all().order_by("id")
+            cache_key = "all_employees"
+            def fetch_all_employees():
+                return list(Employee.objects.all().values_list('id', flat = True))
+            employee_ids = get_or_set_cache(cache_key, fetch_all_employees, timeout=60*40)
+            return Employee.objects.filter(id__in = employee_ids).order_by("id")
+        #normal employee cache individually
+        cache_key = f"employee_{user.id}"
+        def fetch_self():
+            return list(Employee.objects.filter(user=user).values_list('id', flat=True))
+        employee_ids = get_or_set_cache(cache_key, fetch_self, timeout=60*40)
+        return Employee.objects.filter(id__in=employee_ids)
 
-        # Normal employee → only their own profile
-        return Employee.objects.filter(user=user)
+class LeaveRequestViewSet(viewsets.ModelViewSet):
+    queryset = LeaveRequest.objects.all()
+    serializer_class = LeaveRequestSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if hasattr(user, "employee"):
+            return LeaveRequest.objects.filter(employee=user.employee)
+        return LeaveRequest.objects.all()
+    def perform_create(self, serializer):
+        user = self.request.user
+        if hasattr(user, "employee"):
+            serializer.save(employee = user.employee)
+        else:
+            serializer.save()
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response({"Message":"Leave request submitted successfully.", "data": serializer.data}, status = status.HTTP_201_CREATED)
