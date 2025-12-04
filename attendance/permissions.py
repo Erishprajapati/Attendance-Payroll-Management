@@ -12,14 +12,10 @@ class IsEmployee(BasePermission):
     """Allow access only to users with role = 'EMPLOYEE'"""
     def has_permission(self, request, view):
         emp = get_employee(request.user)
-        if not emp:
-            return False
-        return emp.role == 'EMPLOYEE'
+        return emp is not None and emp.role == 'EMPLOYEE'
 
-class IsHR(BasePermission):
+class IsOfficial(BasePermission):
     """Allow access to HR, ADMIN, or MANAGER roles"""
     def has_permission(self, request, view):
         emp = get_employee(request.user)
-        if not emp:
-            return False
-        return emp.role in ['HR', 'ADMIN', 'MANAGER']
+        return emp is not None and emp.role in ['HR', "ADMIN", "MANAGER"]
