@@ -16,6 +16,8 @@ from django.core.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from ...permissions import *
 from django.core.cache import cache
+from ...utils import *
+from datetime import timedelta
 #redis function 
 def get_or_set_cache(key, func, timeout = 3600):
     data = cache.get(key)
@@ -143,7 +145,7 @@ class AttendanceViewset(GenericViewSet):
         record.check_out = timezone.now()
         record.save()
         return Response({"Message":"Checked out successfully"}, status=status.HTTP_200_OK)
-    @action(detail=False, methods=['get'], permission_classes=[IsEmployee, IsHR])
+    @action(detail=False, methods=['get'], permission_classes=[IsEmployee, IsOfficial])
     def my_attendance(self, request):
         """Employee can view their attendance logs for previous 30 days"""
         emp = self.get_employee()
@@ -177,7 +179,7 @@ class AttendanceViewset(GenericViewSet):
         serializer = AttendanceSummarySerializer(summary)
         return Response(serializer.data)
 
-    @action(detail =False, methods=['get'], permission_classes = [IsHR])
+    @action(detail =False, methods=['get'], permission_classes = [IsOfficial])
     def overall_attendance(self,request):
         records = AttendanceRecord.objects.filter(
             date__gte=timezone.now().date() - timezone.timedelta(days=30)
@@ -211,23 +213,67 @@ class EmployeeProfileViewSet(viewsets.ModelViewSet):
         return Employee.objects.filter(id__in=employee_ids)
 
 class LeaveRequestViewSet(viewsets.ModelViewSet):
-    queryset = LeaveRequest.objects.all()
     serializer_class = LeaveRequestSerializer
-    permission_classes = [IsAuthenticated]
 
+    # Permissions
+    def get_permissions(self):
+        if self.action in ["list", "retrieve", "create"]:
+            return [permission() for permission in [IsEmployee | IsOfficial]]
+        elif self.action in ["update", "partial_update", "destroy"]:
+            return [IsOfficial()]
+        return [IsAuthenticated()]
+
+    # Queryset logic
     def get_queryset(self):
         user = self.request.user
-        if hasattr(user, "employee"):
-            return LeaveRequest.objects.filter(employee=user.employee)
-        return LeaveRequest.objects.all()
+        employee = getattr(user, "employee_profile", None)
+
+        if not employee:
+            return LeaveRequest.objects.none()
+
+        # HR / Admin / Manager → full access
+        if employee.role in ["HR", "ADMIN", "MANAGER"]:
+            return LeaveRequest.objects.all()
+
+        # Regular employee → only their leaves
+        return LeaveRequest.objects.filter(employee=self.request.employee)
+
+    # Creation logic
     def perform_create(self, serializer):
         user = self.request.user
-        if hasattr(user, "employee"):
-            serializer.save(employee = user.employee)
-        else:
-            serializer.save()
+        employee = getattr(user, "employee_profile", None)
+
+        if not employee:
+            raise serializers.ValidationError({"Message": "Employee profile not found"})
+
+        # Employee can only create their own requests
+        if employee.role == "EMPLOYEE":
+            serializer.save(employee=employee)
+            return
+
+        # HR / Admin / Manager can create for specific employee
+        provided_employee_id = self.request.data.get("employee")
+        if provided_employee_id:
+            try:
+                target_emp = Employee.objects.get(id=provided_employee_id)
+            except Employee.DoesNotExist:
+                raise serializers.ValidationError({
+                    "Message": "Employee does not exist with this ID"
+                })
+            serializer.save(employee=target_emp)
+            return
+
+        # Provided employee not given
+        raise serializers.ValidationError({
+            "Message": "Employee ID is required for privileged roles"
+        })
+
+    # Standard create override
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         self.perform_create(serializer)
-        return Response({"Message":"Leave request submitted successfully.", "data": serializer.data}, status = status.HTTP_201_CREATED)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
