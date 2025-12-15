@@ -109,78 +109,61 @@ class AttendanceRecord(models.Model):
         unique_together=('employee', 'date') #one employee per day record
 
     def calculate_status_and_hours(self):
-    # Fix your broken status list
-        if self.status in ['on_leave', 'unpaid_leave', 'holiday', 'weekend']:
-            self.hours_worked = 0.00
-            return
-
-        # Absent if no check-in
-        if not self.check_in:
+        #skipping the fixed status
+        """this logic states that if some employee is in these condition they will be marked as absent"""
+        if self.status in {'on_leave', 'unpaid_leave', 'holiday', 'weekend'}:
+            self.hours_worked = 0
+            self.hours_minutes = 0
+            self.overtime_hours = 0
+        if not self.check_in or not self.check_out:
             self.status = 'absent'
-            self.hours_worked = 0.00
+            self.hours_worked = 0
+            self.hours_minutes = 0
+            self.overtime_hours = 0
             return
-
         dept = self.employee.department
         if not dept:
             self.status = 'absent'
-            self.hours_worked = 0.00
             return
-
-        # Normalize all datetimes
-        check_in_dt = make_aware_if_naive(self.check_in)
-        check_out_dt = make_aware_if_naive(self.check_out)
-
+        
+        check_in = make_aware_if_naive(self.check_in)
+        check_out = make_aware_if_naive(self.check_out)
         shift_start = make_aware_if_naive(
             datetime.combine(self.date, dept.work_start_time)
         )
         shift_end = make_aware_if_naive(
             datetime.combine(self.date, dept.work_end_time)
         )
-
-        now = timezone.now()
-
-        # If checkout exists → normal calculation
-        if check_out_dt:
-            duration = check_out_dt - check_in_dt
-            self.hours_worked = round(duration.total_seconds() / 3600, 2)
-
-        else:
-            # Auto-checkout if shift already ended
-            if now > shift_end:
-                self.check_out = shift_end
-                self.is_auto_checkout = True
-
-                duration = shift_end - check_in_dt
-                self.hours_worked = round(duration.total_seconds() / 3600, 2)
-            else:
-                # shift ongoing
-                self.hours_worked = 0.00
-
-        # Status assignment
-        if self.hours_worked >= 8.00:
-            self.status = 'preseent'
-        elif self.hours_worked >= 4.00:
+        effective_checkout = min(check_out, shift_end)
+        worked_minutes = int(
+            max(0, (effective_checkout- check_in).total_seconds() // 60)
+        )
+        self.hours_worked = round(worked_minutes / 60,2)
+        if worked_minutes >= 480:
+            self.status = 'present'
+        elif worked_minutes >=240:
             self.status = 'half_day'
         else:
             self.status = 'absent'
-
-        # Late calculation
-        if check_in_dt <= shift_start:
-            self.late_minutes = 0
-        else:
-            late_duration = check_in_dt - shift_start
-            self.late_minutes = int(late_duration.total_seconds() // 60)
-
-            # Apply grace minutes safely
-            if hasattr(dept, "grace_minutes") and self.late_minutes <= dept.grace_minutes:
+        #the logic that handles the late minutes arrival
+        if self.status in {'present', 'half_day'}:
+            if check_in > shift_start:
+                late = int((check_in - shift_start).total_seconds() // 60)
+                #TODO: check the grace minutes in department and set it otherwise it will create the bug of not having grace minutes
+                grace = getattr(dept, 'grace_minutes', 0)
+                self.late_minutes = max(0, late - grace)
+            else:
                 self.late_minutes = 0
+        else:
+            self.late_minutes = 0
 
-        # Overtime (placeholder)
-        self.overtime_hours = 0.00
+        """Overtime logic"""
+        if check_out > shift_end:
+            overtime_minutes = int((check_out-shift_end).total_seconds() // 60)
+            self.overtime_hours = round(overtime_minutes / 60, 2)
+        else:
+            self.overtime_hours = 0
 
-    def save(self, *args, **kwargs):
-        self.calculate_status_and_hours()
-        super().save(*args, **kwargs)
     def __str__(self):
         return f"{self.employee.user.username}-{self.date}-{self.status}"
 
