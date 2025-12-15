@@ -127,6 +127,11 @@ class AttendanceSummarySerializer(serializers.Serializer):
 class LeaveRequestSerializer(serializers.ModelSerializer):
     """optional so that employee can say they first informed"""
     notification_date = serializers.DateField(required=False, write_only=True)
+    employee = serializers.PrimaryKeyRelatedField(
+        queryset=Employee.objects.all(),
+        required=False,
+        allow_null=False
+    )
     class Meta:
         model = LeaveRequest
         fields = "__all__"
